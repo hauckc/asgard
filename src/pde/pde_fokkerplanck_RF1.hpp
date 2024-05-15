@@ -28,31 +28,62 @@ private:
   static bool constexpr do_poisson_solve_  = false;
   static bool constexpr has_analytic_soln_ = true;
 
-  static P constexpr nu = M_PI_2;
+  static P constexpr nu_old = M_PI_2;   // TODO:  remove later
   static P constexpr diff_rf_0 = 1.0e6;  
   static P constexpr v_lower = 1.0;
   static P constexpr v_upper = 2.0;
+  static P constexpr electron_plasma_frequency = 1.0;
+  static P constexpr coulomb_logarithm =  1.0;
+  static P constexpr electron_density = 1.0;
+  static P constexpr T_e = 1.0;
+  static P constexpr m_e = 1.0;
+  static P constexpr delta = 1.0e-6;  // regularization parameter for collision frequency
+  static P constexpr v_thermal = 1;
+  static P constexpr nu_0 = electron_density * electron_density * electron_density * electron_density
+    * coulomb_logarithm / (2 * M_PI * electron_density * v_thermal * v_thermal * v_thermal);
+  
+  static P constexpr z_eff = 1.0;   //TODO get this formula
+  static P constexpr F_e0 = 1.0;    // This is the value of f_e at v = 0
+
 
   // TODO: figure out the values for the parameters above  
 
   // model parameters
 
-  static P diff_rf(P const v, P const time)
+  static P hat_diff_rf(P const v)
   {
-    // suppress compiler warnings
-    ignore(time);
     
     return ((v - v_lower)*(v - v_upper) < 0.0) ? diff_rf_0 : 0.0;
     
   }
 
-  static fk::vector<P>
-  initial_condition_dim0(fk::vector<P> const &x, P const t = 0)
+   static P diff_rf(P const v, P const time)
   {
-    ignore(t);
+    // suppress compiler warnings
+    ignore(time);
+    
+    return hat_diff_rf(v) * (2.0  + z_eff)/2.0 * nu_0 * v_thermal * v_thermal;
+    
+  }
+
+  static P collision_frequency(P const v, P const time)
+  {
+    // suppress compiler warnings
+    ignore(time);
+    return nu_0 * std::pow(v_thermal / (std::abs(v) + delta),3);
+  }
+
+  static fk::vector<P>
+  initial_condition_dim0(fk::vector<P> const &x, P const time = 0)
+  {
+    ignore(time);
     fk::vector<P> fx(x.size());
-    std::transform(x.begin(), x.end(), fx.begin(),
-                   [](P const &x_v) { return std::cos(nu * x_v); });
+    // std::transform(x.begin(), x.end(), fx.begin(),
+    //                [](P const &x_v) { return std::cos(nu_old * x_v); });
+    for (int i =0; i < x.size(); i++)
+    {
+      fx(i) = F_e0 * std::exp(-x(i)*x(i)/v_thermal/v_thermal);
+    }
     return fx;
   }
 
@@ -73,20 +104,20 @@ private:
 
     fk::vector<P> fx(x.size());
     std::transform(x.begin(), x.end(), fx.begin(),
-                   [](P const x_v) -> P { return std::cos(nu * x_v); });
+                   [](P const x_v) -> P { return std::cos(nu_old * x_v); });
 
     return fx;
   }
 
   static P bc_time_func(P const t)
   {
-    /* e^(-2 * nu^2 * t )*/
-    static double const p = -2.0 * nu * nu;
+    /* e^(-2 * nu_old^2 * t )*/
+    static double const p = -2.0 * nu_old * nu_old;
     return std::exp(p * t);
   }
 
   // TODO: Add interior penalty terms?
-  // TODO: update nu value, check initial conditions
+  // TODO: update nu_old value, check initial conditions
   inline static const partial_term<P> partial_term_1 = partial_term<P>(
       coefficient_type::grad, nullptr, nullptr, flux_type::upwind,
       boundary_condition::dirichlet, boundary_condition::dirichlet,
@@ -143,11 +174,11 @@ private:
   static fk::vector<P> source_0_x(fk::vector<P> const x, P const t)
   {
     ignore(t);
-    static double const coefficient = -1.0 * nu * nu;
+    static double const coefficient = -1.0 * nu_old * nu_old;
 
     fk::vector<P> fx(x.size());
     std::transform(x.begin(), x.end(), fx.begin(), [](P const x_v) -> P {
-      return coefficient * std::cos(nu * x_v);
+      return coefficient * std::cos(nu_old * x_v);
     });
 
     return fx;
@@ -155,7 +186,7 @@ private:
 
   static P source_0_t(P const t)
   {
-    static double const coefficient = -2.0 * nu * nu;
+    static double const coefficient = -2.0 * nu_old * nu_old;
 
     return std::exp(coefficient * t);
   }
@@ -170,7 +201,7 @@ private:
     ignore(t);
     fk::vector<P> fx(x.size());
     std::transform(x.begin(), x.end(), fx.begin(),
-                   [](P const &x_v) { return std::cos(nu * x_v); });
+                   [](P const &x_v) { return std::cos(nu_old * x_v); });
     return fx;
   }
 
