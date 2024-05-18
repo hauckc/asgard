@@ -16,7 +16,11 @@ public:
       : PDE<P>(cli_input, num_dims_, num_sources_, num_terms_, dimensions_,
                terms_, sources_, exact_vector_funcs_, exact_scalar_func_,
                get_dt_, do_poisson_solve_, has_analytic_soln_)
-  {}
+  {
+    v_thermal = 1; // executed at runtime, can use std::sqrt and other such methods
+    nu_0 = electron_density * electron_density * electron_density * electron_density
+      * coulomb_logarithm / (2 * M_PI * electron_density * v_thermal * v_thermal * v_thermal);
+  }
 
 private:
   // these fields will be checked against provided functions to make sure
@@ -38,9 +42,8 @@ private:
   static P constexpr T_e = 1.0;
   static P constexpr m_e = 1.0;
   static P constexpr delta = 1.0e-6;  // regularization parameter for collision frequency
-  static P constexpr v_thermal = 1;
-  static P constexpr nu_0 = electron_density * electron_density * electron_density * electron_density
-    * coulomb_logarithm / (2 * M_PI * electron_density * v_thermal * v_thermal * v_thermal);
+  static P v_thermal;
+  static P nu_0;
   
   static P constexpr z_eff = 1.0;   //TODO get this formula
   static P constexpr F_e0 = 1.0;    // This is the value of f_e at v = 0
@@ -225,4 +228,11 @@ private:
     return std::pow(0.25, dim.get_level());
   }
 };
+
+template<typename P>
+P PDE_fokkerplanck_RF1<P>::v_thermal;
+
+template<typename P>
+P PDE_fokkerplanck_RF1<P>::nu_0;
+
 } // namespace asgard
