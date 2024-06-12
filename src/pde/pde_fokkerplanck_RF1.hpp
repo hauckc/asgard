@@ -17,7 +17,7 @@ public:
                terms_, sources_, exact_vector_funcs_, exact_scalar_func_,
                get_dt_, do_poisson_solve_, has_analytic_soln_)
   {
-    v_thermal = sqrt(2 * T_e / m_e); // executed at runtime, can use std::sqrt and other such methods
+    v_thermal = std::sqrt(2 * T_e / m_e); // executed at runtime, can use std::sqrt and other such methods
     nu_0 = electron_density * electron_density * electron_density * electron_density
       * coulomb_logarithm / (2 * M_PI * electron_density * v_thermal * v_thermal * v_thermal);
   }
@@ -27,7 +27,7 @@ private:
   // everything is specified correctly
 
   static int constexpr num_dims_           = 1;
-  static int constexpr num_sources_        = 1;
+  static int constexpr num_sources_        = 0;
   static int constexpr num_terms_          = 3;
   static bool constexpr do_poisson_solve_  = false;
   static bool constexpr has_analytic_soln_ = false;
@@ -119,7 +119,7 @@ private:
 
   /* Define the dimension */
   inline static dimension<P> const dim_0 =
-      dimension<P>(-5.0*v_thermal, 5*v_thermal, 3, 2, initial_condition_dim0, nullptr, "v_par");
+      dimension<P>(-8.0, 8.0, 3, 2, initial_condition_dim0, nullptr, "v_par");
 
   inline static std::vector<dimension<P>> const dimensions_ = {dim_0};
 
