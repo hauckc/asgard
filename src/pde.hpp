@@ -122,6 +122,7 @@ std::unique_ptr<PDE<P>> make_PDE(parser const &cli_input)
   case PDE_opts::collisional_landau_1x3v:
     return std::make_unique<PDE_collisional_landau_1x3v<P>>(cli_input);
   case PDE_opts::fokkerplanck_RF1:
+    PDE_fokkerplanck_RF1<P>::init(cli_input);
     return std::make_unique<PDE_fokkerplanck_RF1<P>>(cli_input);  
   default:
     std::cout << "Invalid pde choice" << std::endl;

@@ -12,15 +12,22 @@ template<typename P>
 class PDE_fokkerplanck_RF1 : public PDE<P>
 {
 public:
-  PDE_fokkerplanck_RF1(parser const &cli_input)
-      : PDE<P>(cli_input, num_dims_, num_sources_, num_terms_, dimensions_,
-               terms_, sources_, exact_vector_funcs_, exact_scalar_func_,
-               get_dt_, do_poisson_solve_, has_analytic_soln_)
+  /*!
+   * Called before the constructor to initialize the static variables.
+   * This method could be adjusted to read the values from an file.
+   */
+  static void init(parser const &)
   {
     v_thermal = std::sqrt(2 * T_e / m_e); // executed at runtime, can use std::sqrt and other such methods
     nu_0 = electron_density * electron_density * electron_density * electron_density
       * coulomb_logarithm / (2 * M_PI * electron_density * v_thermal * v_thermal * v_thermal);
   }
+
+  PDE_fokkerplanck_RF1(parser const &cli_input)
+      : PDE<P>(cli_input, num_dims_, num_sources_, num_terms_, dimensions_,
+               terms_, sources_, exact_vector_funcs_, exact_scalar_func_,
+               get_dt_, do_poisson_solve_, has_analytic_soln_)
+  {}
 
 private:
   // these fields will be checked against provided functions to make sure
