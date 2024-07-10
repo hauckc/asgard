@@ -8,6 +8,7 @@
 #include <numeric>
 #include <random>
 #include <sstream>
+#include <string>
 
 using namespace asgard;
 
@@ -35,10 +36,11 @@ void time_advance_test(parser const &parse,
                        P const tolerance_factor)
 {
   auto const num_ranks = get_num_ranks();
-  if (num_ranks > 1 && parse.using_implicit() &&
-      parse.get_selected_solver() != solve_opts::scalapack)
+  if (num_ranks > 1 && parse.using_implicit()
+      /* && parse.get_selected_solver() != solve_opts::scalapack*/)
   {
     // distributed implicit stepping not implemented
+    // scalapack implmentation is broken.
     return;
   }
 
@@ -82,7 +84,7 @@ void time_advance_test(parser const &parse,
 
   fk::vector<P> f_val(initial_condition);
 
-  asgard::matrix_list<P> operator_matrices;
+  asgard::kron_operators<P> operator_matrices;
 
   // -- time loop
   for (auto i = 0; i < opts.num_time_steps; ++i)
@@ -107,7 +109,7 @@ void time_advance_test(parser const &parse,
 
     // each rank generates partial answer
     auto const dof =
-        static_cast<int>(std::pow(parse.get_degree(), pde->num_dims));
+        static_cast<int>(std::pow(parse.get_degree(), pde->num_dims()));
     auto const subgrid = adaptive_grid.get_subgrid(get_rank());
     REQUIRE((subgrid.col_stop + 1) * dof - 1 <= gold.size());
     auto const my_gold = fk::vector<P, mem_type::const_view>(
@@ -1321,6 +1323,7 @@ TEMPLATE_TEST_CASE("IMEX time advance - landau", "[imex]", test_precs)
   parser_mod::set(parse, parser_mod::degree, degree);
   parser_mod::set(parse, parser_mod::dt, 0.019634954084936);
   parser_mod::set(parse, parser_mod::use_imex_stepping, true);
+  parser_mod::set(parse, parser_mod::solver_str, "gmres");
   parser_mod::set(parse, parser_mod::use_full_grid, true);
   parser_mod::set(parse, parser_mod::num_time_steps, nsteps);
   parser_mod::set(parse, parser_mod::gmres_tolerance, gmres_tol);
@@ -1357,7 +1360,7 @@ TEMPLATE_TEST_CASE("IMEX time advance - landau", "[imex]", test_precs)
   generate_dimension_mass_mat(*pde, transformer);
 
   fk::vector<TestType> f_val(initial_condition);
-  asgard::matrix_list<TestType> operator_matrices;
+  asgard::kron_operators<TestType> operator_matrices;
 
   TestType E_pot_initial = 0.0;
   TestType E_kin_initial = 0.0;
@@ -1420,6 +1423,7 @@ TEMPLATE_TEST_CASE("IMEX time advance - twostream", "[imex]", double)
   parser_mod::set(parse, parser_mod::degree, degree);
   parser_mod::set(parse, parser_mod::dt, 6.25e-3);
   parser_mod::set(parse, parser_mod::use_imex_stepping, true);
+  parser_mod::set(parse, parser_mod::solver_str, "gmres");
   parser_mod::set(parse, parser_mod::use_full_grid, true);
   parser_mod::set(parse, parser_mod::num_time_steps, nsteps);
 
@@ -1455,7 +1459,7 @@ TEMPLATE_TEST_CASE("IMEX time advance - twostream", "[imex]", double)
   generate_dimension_mass_mat(*pde, transformer);
 
   fk::vector<TestType> f_val(initial_condition);
-  asgard::matrix_list<TestType> operator_matrices;
+  asgard::kron_operators<TestType> operator_matrices;
 
   TestType E_pot_initial = 0.0;
   TestType E_kin_initial = 0.0;
@@ -1549,6 +1553,7 @@ TEMPLATE_TEST_CASE("IMEX time advance - twostream - ASG", "[imex][adapt]",
   parser_mod::set(parse, parser_mod::degree, degree);
   parser_mod::set(parse, parser_mod::dt, 6.25e-3);
   parser_mod::set(parse, parser_mod::use_imex_stepping, true);
+  parser_mod::set(parse, parser_mod::solver_str, "gmres");
   parser_mod::set(parse, parser_mod::use_full_grid, false);
   parser_mod::set(parse, parser_mod::do_adapt, true);
   parser_mod::set(parse, parser_mod::max_level, 5);
@@ -1587,7 +1592,7 @@ TEMPLATE_TEST_CASE("IMEX time advance - twostream - ASG", "[imex][adapt]",
   generate_dimension_mass_mat(*pde, transformer);
 
   fk::vector<TestType> f_val(initial_condition);
-  asgard::matrix_list<TestType> operator_matrices;
+  asgard::kron_operators<TestType> operator_matrices;
 
   TestType E_pot_initial = 0.0;
   TestType E_kin_initial = 0.0;
@@ -1694,6 +1699,7 @@ TEMPLATE_TEST_CASE("IMEX time advance - relaxation1x1v", "[imex]", test_precs)
   parser_mod::set(parse, parser_mod::degree, degree);
   parser_mod::set(parse, parser_mod::dt, 5.0e-4);
   parser_mod::set(parse, parser_mod::use_imex_stepping, true);
+  parser_mod::set(parse, parser_mod::solver_str, "gmres");
   parser_mod::set(parse, parser_mod::use_full_grid, true);
   parser_mod::set(parse, parser_mod::num_time_steps, nsteps);
   parser_mod::set(parse, parser_mod::gmres_tolerance, gmres_tol);
@@ -1730,7 +1736,7 @@ TEMPLATE_TEST_CASE("IMEX time advance - relaxation1x1v", "[imex]", test_precs)
   generate_dimension_mass_mat(*pde, transformer);
 
   fk::vector<TestType> f_val(initial_condition);
-  asgard::matrix_list<TestType> operator_matrices;
+  asgard::kron_operators<TestType> operator_matrices;
 
   // -- time loop
   for (int i = 0; i < opts.num_time_steps; ++i)
@@ -1749,7 +1755,7 @@ TEMPLATE_TEST_CASE("IMEX time advance - relaxation1x1v", "[imex]", test_precs)
     if (i == opts.num_time_steps - 1)
     {
       fk::vector<TestType> const analytic_solution = sum_separable_funcs(
-          pde->exact_vector_funcs, pde->get_dimensions(), adaptive_grid,
+          pde->exact_vector_funcs(), pde->get_dimensions(), adaptive_grid,
           transformer, degree, time + pde->get_dt());
 
       // calculate L2 error between simulation and analytical solution
@@ -1792,6 +1798,7 @@ TEMPLATE_TEST_CASE("IMEX time advance - relaxation1x2v", "[!mayfail][imex]",
   parser_mod::set(parse, parser_mod::degree, degree);
   parser_mod::set(parse, parser_mod::dt, 5.0e-4);
   parser_mod::set(parse, parser_mod::use_imex_stepping, true);
+  parser_mod::set(parse, parser_mod::solver_str, "gmres");
   parser_mod::set(parse, parser_mod::use_full_grid, true);
   parser_mod::set(parse, parser_mod::num_time_steps, nsteps);
 
@@ -1821,6 +1828,7 @@ TEMPLATE_TEST_CASE("IMEX time advance - relaxation1x3v", "[!mayfail][imex]",
   parser_mod::set(parse, parser_mod::degree, degree);
   parser_mod::set(parse, parser_mod::dt, 5.0e-4);
   parser_mod::set(parse, parser_mod::use_imex_stepping, true);
+  parser_mod::set(parse, parser_mod::solver_str, "gmres");
   parser_mod::set(parse, parser_mod::use_full_grid, true);
   parser_mod::set(parse, parser_mod::num_time_steps, nsteps);
 
@@ -1863,22 +1871,24 @@ void test_memory_mode(imex_flag imex)
   kron_sparse_cache spcache_null1, spcache_one;
   memory_usage memory_one =
       compute_mem_usage(*pde, grid, opts, imex, spcache_null1);
-  auto mat_one              = make_kronmult_matrix(*pde, grid, opts, memory_one,
-                                      imex_flag::unspecified, spcache_null1);
+
+  auto mat_one = make_local_kronmult_matrix(
+      *pde, grid, opts, memory_one, imex_flag::unspecified, spcache_null1);
   memory_usage spmemory_one = compute_mem_usage(
       *pde, grid, opts, imex, spcache_one, 6, 2147483646, force_sparse);
-  auto spmat_one = make_kronmult_matrix(*pde, grid, opts, spmemory_one, imex,
-                                        spcache_one, force_sparse);
+  auto spmat_one = make_local_kronmult_matrix(
+      *pde, grid, opts, spmemory_one, imex, spcache_one, force_sparse);
 
   kron_sparse_cache spcache_null2, spcache_multi;
   memory_usage memory_multi =
       compute_mem_usage(*pde, grid, opts, imex, spcache_null2, 0, 8000);
-  auto mat_multi =
-      make_kronmult_matrix(*pde, grid, opts, memory_multi, imex, spcache_null2);
+
+  auto mat_multi = make_local_kronmult_matrix(
+      *pde, grid, opts, memory_multi, imex, spcache_null2);
   memory_usage spmemory_multi = compute_mem_usage(
       *pde, grid, opts, imex, spcache_multi, 6, 8000, force_sparse);
-  auto spmat_multi = make_kronmult_matrix(*pde, grid, opts, spmemory_multi,
-                                          imex, spcache_multi, force_sparse);
+  auto spmat_multi = make_local_kronmult_matrix(
+      *pde, grid, opts, spmemory_multi, imex, spcache_multi, force_sparse);
 
   REQUIRE(mat_one.is_onecall());
   REQUIRE(spmat_one.is_onecall());

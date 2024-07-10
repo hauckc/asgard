@@ -23,7 +23,18 @@ template<typename precision>
 std::vector<int> get_used_terms(PDE<precision> const &pde, options const &opts,
                                 imex_flag const imex);
 
+/*!
+ * \brief Converts the cells into a vector2d structure
+ */
+template<typename precision>
+vector2d<int> get_cells(int num_dimensions,
+                        adapt::distributed_grid<precision> const &dis_grid);
+
 #ifndef KRON_MODE_GLOBAL
+// using LOCAL kronmult, can be parallelised using MPI but much more expensive
+// then the global modes below
+// also has the ability to limit memory and do some operations out-of-core
+// hence it is currently the most memory conserving mode
 
 /*!
  * \brief Holds data for the pre-computed memory sizes.
@@ -109,38 +120,37 @@ struct kron_sparse_cache
  * Each row/column entry corresponds to a Kronecker product.
  */
 template<typename precision>
-class kronmult_matrix
+class local_kronmult_matrix
 {
 public:
   //! \brief Creates uninitialized matrix cannot be used except to be reinitialized.
-  kronmult_matrix()
+  local_kronmult_matrix()
       : num_dimensions_(0), kron_size_(0), num_rows_(0), num_cols_(0),
         num_terms_(0), tensor_size_(0), flops_(0), list_row_stride_(0),
         row_offset_(0), col_offset_(0), num_1d_blocks_(0)
   {}
 
   //! \brief Creates a zero/empty matrix no terms.
-  kronmult_matrix(int num_dimensions, int kron_size, int num_rows, int num_cols)
+  local_kronmult_matrix(int num_dimensions, int kron_size, int num_rows, int num_cols)
       : num_dimensions_(num_dimensions), kron_size_(kron_size),
         num_rows_(num_rows), num_cols_(num_cols), num_terms_(0),
-        tensor_size_(0), flops_(0), list_row_stride_(0), row_offset_(0),
+        tensor_size_(fm::ipow(kron_size_, num_dimensions_)),
+        flops_(0), list_row_stride_(0), row_offset_(0),
         col_offset_(0), num_1d_blocks_(0)
-  {
-    tensor_size_ = compute_tensor_size(num_dimensions_, kron_size_);
-  }
+  {}
 
   template<resource input_mode>
-  kronmult_matrix(
+  local_kronmult_matrix(
       int num_dimensions, int kron_size, int num_rows, int num_cols,
       int num_terms,
       std::vector<fk::vector<precision, mem_type::owner, input_mode>> &&terms,
       fk::vector<int, mem_type::owner, input_mode> &&elem, int row_offset,
-      int col_offset, int num_1d_blocks)
+      int col_offset, int num_1d_blocks, std::vector<precision> &&prec)
       : num_dimensions_(num_dimensions), kron_size_(kron_size),
         num_rows_(num_rows), num_cols_(num_cols), num_terms_(num_terms),
         tensor_size_(1), terms_(std::move(terms)), elem_(std::move(elem)),
         row_offset_(row_offset), col_offset_(col_offset),
-        num_1d_blocks_(num_1d_blocks)
+        num_1d_blocks_(num_1d_blocks), pre_con_(std::move(prec))
   {
 #ifdef ASGARD_USE_CUDA
     static_assert(
@@ -169,9 +179,9 @@ public:
       term_pntr_[t] = terms_[t].data();
 #endif
 
-    tensor_size_ = compute_tensor_size(num_dimensions_, kron_size_);
+    tensor_size_ = fm::ipow(kron_size_, num_dimensions_);
 
-    flops_ = int64_t(tensor_size_) * kron_size_ * num_rows_ * num_cols_ *
+    flops_ = tensor_size_ * kron_size_ * num_rows_ * num_cols_ *
              num_terms_ * num_dimensions_;
   }
 
@@ -233,18 +243,20 @@ public:
    * product uses tensors at row_indx[i] and col_indx[i].
    */
   template<resource input_mode>
-  kronmult_matrix(int num_dimensions, int kron_size, int num_rows, int num_cols,
-                  int num_terms,
-                  fk::vector<int, mem_type::owner, input_mode> &&row_indx,
-                  fk::vector<int, mem_type::owner, input_mode> &&col_indx,
-                  fk::vector<int, mem_type::owner, input_mode> &&index_A,
-                  fk::vector<precision, mem_type::owner, input_mode> &&values_A)
+  local_kronmult_matrix(
+      int num_dimensions, int kron_size, int num_rows, int num_cols,
+      int num_terms,
+      fk::vector<int, mem_type::owner, input_mode> &&row_indx,
+      fk::vector<int, mem_type::owner, input_mode> &&col_indx,
+      fk::vector<int, mem_type::owner, input_mode> &&index_A,
+      fk::vector<precision, mem_type::owner, input_mode> &&values_A,
+      std::vector<precision> &&prec)
       : num_dimensions_(num_dimensions), kron_size_(kron_size),
         num_rows_(num_rows), num_cols_(num_cols), num_terms_(num_terms),
         tensor_size_(1), row_indx_(std::move(row_indx)),
         col_indx_(std::move(col_indx)), iA(std::move(index_A)),
         list_row_stride_(0), vA(std::move(values_A)), row_offset_(0),
-        col_offset_(0), num_1d_blocks_(0)
+        col_offset_(0), num_1d_blocks_(0), pre_con_(std::move(prec))
   {
 #ifdef ASGARD_USE_CUDA
     static_assert(
@@ -258,9 +270,9 @@ public:
 
     expect(not row_indx_.empty() and not col_indx_.empty());
 
-    tensor_size_ = compute_tensor_size(num_dimensions_, kron_size_);
+    tensor_size_ = fm::ipow(kron_size_, num_dimensions_);
 
-    flops_ = int64_t(tensor_size_) * kron_size_ * iA.size();
+    flops_ = tensor_size_ * kron_size_ * iA.size();
 
 #ifdef ASGARD_USE_CUDA
     expect(row_indx_.size() == col_indx_.size());
@@ -282,16 +294,18 @@ public:
    *         for the CPU and device when CUDA is enabled
    */
   template<resource multi_mode, resource input_mode>
-  kronmult_matrix(
+  local_kronmult_matrix(
       int num_dimensions, int kron_size, int num_rows, int num_cols,
       int num_terms,
       std::vector<fk::vector<int, mem_type::owner, multi_mode>> &&row_indx,
       std::vector<fk::vector<int, mem_type::owner, multi_mode>> &&col_indx,
       std::vector<fk::vector<int, mem_type::owner, multi_mode>> &&list_index_A,
-      fk::vector<precision, mem_type::owner, input_mode> &&values_A)
-      : kronmult_matrix(num_dimensions, kron_size, num_rows, num_cols,
-                        num_terms, 0, std::move(row_indx), std::move(col_indx),
-                        std::move(list_index_A), std::move(values_A))
+      fk::vector<precision, mem_type::owner, input_mode> &&values_A,
+      std::vector<precision> &&prec)
+      : local_kronmult_matrix(num_dimensions, kron_size, num_rows, num_cols,
+                              num_terms, 0, std::move(row_indx), std::move(col_indx),
+                              std::move(list_index_A), std::move(values_A),
+                              std::move(prec))
   {
     expect(not(list_row_indx_.empty() and list_col_indx_.empty()));
   }
@@ -495,19 +509,11 @@ public:
   //! \brief Returns the number of flops in a single call to apply()
   int64_t flops() const { return flops_; }
 
-  //! \brief Helper, computes the size of a tensor for the given parameters.
-  static int compute_tensor_size(int const num_dimensions, int const kron_size)
-  {
-    int tensor_size = kron_size;
-    for (int d = 1; d < num_dimensions; d++)
-      tensor_size *= kron_size;
-    return tensor_size;
-  }
   //! \brief Helper, computes the number of flops for each call to apply.
   static int64_t compute_flops(int const num_dimensions, int const kron_size,
                                int const num_terms, int64_t const num_batch)
   {
-    return int64_t(compute_tensor_size(num_dimensions, kron_size)) * kron_size *
+    return fm::ipow(kron_size, num_dimensions) * kron_size *
            num_dimensions * num_terms * num_batch * 2;
   }
   //! \brief Defined if the matrix is dense or sparse
@@ -576,10 +582,29 @@ public:
 #endif
   }
 
+  //! \brief Returns the preconditioner.
+  template<resource rec>
+  auto const &get_diagonal_preconditioner() const
+  {
+#ifdef ASGARD_USE_CUDA
+    if constexpr (rec == resource::device)
+    {
+      if (gpu_pre_con_.empty())
+        gpu_pre_con_ = pre_con_;
+      return gpu_pre_con_;
+    }
+    else
+      return pre_con_;
+#else
+    static_assert(rec == resource::host, "GPU not enabled");
+    return pre_con_;
+#endif
+  }
+
 private:
   //! \brief Multi-call constructors delegate to this one, handles list_row_stride_
   template<resource multi_mode, resource input_mode>
-  kronmult_matrix(
+  local_kronmult_matrix(
       int num_dimensions, int kron_size, int num_rows, int num_cols,
       int num_terms, int list_row_stride,
       std::vector<fk::vector<int, mem_type::owner, multi_mode>> const
@@ -587,13 +612,14 @@ private:
       std::vector<fk::vector<int, mem_type::owner, multi_mode>> const
           &&col_indx,
       std::vector<fk::vector<int, mem_type::owner, multi_mode>> &&list_index_A,
-      fk::vector<precision, mem_type::owner, input_mode> &&values_A)
+      fk::vector<precision, mem_type::owner, input_mode> &&values_A,
+      std::vector<precision> &&prec)
       : num_dimensions_(num_dimensions), kron_size_(kron_size),
         num_rows_(num_rows), num_cols_(num_cols), num_terms_(num_terms),
         tensor_size_(1), list_row_stride_(list_row_stride),
         list_row_indx_(std::move(row_indx)),
         list_col_indx_(std::move(col_indx)), list_iA(std::move(list_index_A)),
-        vA(std::move(values_A))
+        vA(std::move(values_A)), pre_con_(std::move(prec))
   {
 #ifdef ASGARD_USE_CUDA
 #ifdef ASGARD_USE_GPU_MEM_LIMIT
@@ -618,7 +644,7 @@ private:
 
     expect(row_indx_.empty() == col_indx_.empty());
 
-    tensor_size_ = compute_tensor_size(num_dimensions_, kron_size_);
+    tensor_size_ = fm::ipow(kron_size_, num_dimensions_);
 
     flops_ = 0;
     for (auto const &a : list_iA)
@@ -631,7 +657,7 @@ private:
   int num_rows_;
   int num_cols_;
   int num_terms_;
-  int tensor_size_;
+  int64_t tensor_size_;
   int64_t flops_;
 
 #ifdef ASGARD_USE_CUDA
@@ -679,6 +705,12 @@ private:
   fk::vector<precision *, mem_type::owner, data_mode> term_pntr_;
   fk::vector<int, mem_type::owner, data_mode> elem_;
   int row_offset_, col_offset_, num_1d_blocks_;
+
+  // preconditioner
+  std::vector<precision> pre_con_;
+#ifdef ASGARD_USE_CUDA
+  mutable gpu::vector<precision> gpu_pre_con_; // gpu copy
+#endif
 };
 
 /*!
@@ -707,11 +739,11 @@ private:
  * \param force_sparse (testing purposes only) forces a sparse matrix
  */
 template<typename P>
-kronmult_matrix<P>
-make_kronmult_matrix(PDE<P> const &pde, adapt::distributed_grid<P> const &grid,
-                     options const &program_options,
-                     memory_usage const &mem_stats, imex_flag const imex,
-                     kron_sparse_cache &spcache, bool force_sparse = false);
+local_kronmult_matrix<P>
+make_local_kronmult_matrix(
+    PDE<P> const &pde, adapt::distributed_grid<P> const &grid, options const &program_options,
+    memory_usage const &mem_stats, imex_flag const imex, kron_sparse_cache &spcache,
+    bool force_sparse = false);
 
 /*!
  * \brief Update the coefficients stored in the matrix without changing the rest
@@ -728,22 +760,44 @@ void update_kronmult_coefficients(PDE<P> const &pde,
                                   options const &program_options,
                                   imex_flag const imex,
                                   kron_sparse_cache &spcache,
-                                  kronmult_matrix<P> &mat);
+                                  local_kronmult_matrix<P> &mat);
 
-#endif // KRON_MODE_GLOBAL
+/*!
+ * \brief Compute the stats for the memory usage
+ *
+ * Computes how to avoid overflow or the use of more memory than
+ * is available on the GPU device.
+ *
+ * \tparam P is float or double
+ *
+ * \param pde holds the problem data
+ * \param grid is the discretization
+ * \param program_options is the user provided options
+ * \param imex is the flag indicating the IMEX mode
+ * \param spcache holds precomputed data about the sparsity pattern which is
+ *        used between multiple calls to avoid recomputing identical entries
+ * \param memory_limit_MB can override the user specified limit (in MB),
+ *        if set to zero the user selection will be used
+ * \param index_limit should be set to the max value held by the 32-bit index,
+ *        namely 2^31 -2 since 2^31 causes an overflow,
+ *        a different value can be used for testing purposes
+ */
+template<typename P>
+memory_usage
+compute_mem_usage(PDE<P> const &pde, adapt::distributed_grid<P> const &grid,
+                  options const &program_options, imex_flag const imex,
+                  kron_sparse_cache &spcache, int memory_limit_MB = 0,
+                  int64_t index_limit = 2147483646, bool force_sparse = false);
 
-//! \brief Expressive indexing for the matrices
-enum matrix_entry
-{
-  //! \brief Regular matrix for implicit or explicit time-stepping
-  regular = 0,
-  //! \brief IMEX explicit matrix
-  imex_explicit = 1,
-  //! \brief IMEX implicit matrix
-  imex_implicit = 2
-};
+#endif // end the ifndef KRON_MODE_GLOBAL
 
 #ifdef KRON_MODE_GLOBAL
+#ifndef KRON_MODE_GLOBAL_BLOCK
+// using GLOBAL kronmult where the explicitly form the sparse matrices
+// can be used with the cuSparse library (in CUDA mode)
+// will be replaced by the block global mode
+
+// forward declaration that allows set/update methods to be friends
 template<typename precision>
 class global_kron_matrix;
 
@@ -857,13 +911,13 @@ public:
 
   //! \brief Apply the operator, including expanding and remapping.
   template<resource rec = resource::host>
-  void apply(matrix_entry etype, precision alpha, precision const *x,
+  void apply(imex_flag etype, precision alpha, precision const *x,
              precision beta, precision *y) const;
 
   //! \brief The matrix evaluates to true if it has been initialized and false otherwise.
   operator bool() const { return (not gvals_.empty()); }
 
-  //! \brief Allows overwriting of the loaded coefficients.
+  //! \brief Returns the preconditioner.
   template<resource rec>
   auto const &get_diagonal_preconditioner() const
   {
@@ -883,12 +937,12 @@ public:
   }
 
   //! \brief Return the number of flops for the current matrix type
-  int64_t flops(matrix_entry etype) const
+  int64_t flops(imex_flag etype) const
   {
-    return flops_[flag2int(etype)];
+    return flops_[static_cast<int>(etype)];
   }
   //! \brief Check if the corresponding lock pattern is set.
-  bool local_unset(matrix_entry etype) const
+  bool local_unset(imex_flag etype) const
   {
     return (flops(etype) == 0);
   }
@@ -925,16 +979,6 @@ public:
       global_kron_matrix<precision> &mat);
 
 protected:
-  //! \brief Convert the imex flag to an index of the arrays.
-  static int flag2int(imex_flag imex)
-  {
-    return (imex == imex_flag::imex_implicit) ? 2 : ((imex == imex_flag::imex_explicit) ? 1 : 0);
-  }
-  //! \brief Convert the matrix entry to an index of the arrays.
-  static int flag2int(matrix_entry imex)
-  {
-    return (imex == matrix_entry::imex_implicit) ? 2 : ((imex == matrix_entry::imex_explicit) ? 1 : 0);
-  }
   // the workspace is kept externally to minimize allocations
   mutable workspace_type *work_;
 
@@ -954,23 +998,20 @@ protected:
                   "no buffer associated with the last entry (num_spaces)");
     default_vector<precision> &w = (*work_)[static_cast<int>(wid)];
     if (static_cast<int64_t>(w.size()) < min_size)
-    {
       w.resize(min_size);
-      // x must always be padded by zeros
-      if constexpr (wid == workspace::pad_x)
-        kronmult::set_buffer_to_zero(w);
-    }
+    // x must always be padded by zeros
+    if constexpr (wid == workspace::pad_x)
+      kronmult::set_buffer_to_zero(w);
   }
 
 private:
-  static constexpr int num_variants = 3;
   // description of the multi-indexes and the sparsity pattern
   // global case data
   int num_dimensions_;
   int64_t num_active_;
   int64_t num_padded_;
   std::vector<kronmult::permutes> perms_;
-  std::array<int64_t, num_variants> flops_;
+  std::array<int64_t, num_imex_variants> flops_;
   // data for the 1D tensors
   std::vector<std::vector<int>> gpntr_;
   std::vector<std::vector<int>> gindx_;
@@ -983,7 +1024,7 @@ private:
   // preconditioner
   std::vector<precision> pre_con_;
 #ifdef ASGARD_USE_CUDA
-  std::array<kronmult::global_gpu_operations<precision>, num_variants> gpu_global;
+  std::array<kronmult::global_gpu_operations<precision>, num_imex_variants> gpu_global;
   mutable gpu::vector<precision> gpu_pre_con_; // gpu copy
 #endif
 };
@@ -998,38 +1039,6 @@ global_kron_matrix<precision>
 make_global_kron_matrix(PDE<precision> const &pde,
                         adapt::distributed_grid<precision> const &dis_grid,
                         options const &program_options);
-#endif
-
-#ifndef KRON_MODE_GLOBAL
-
-/*!
- * \brief Compute the stats for the memory usage
- *
- * Computes how to avoid overflow or the use of more memory than
- * is available on the GPU device.
- *
- * \tparam P is float or double
- *
- * \param pde holds the problem data
- * \param grid is the discretization
- * \param program_options is the user provided options
- * \param imex is the flag indicating the IMEX mode
- * \param spcache holds precomputed data about the sparsity pattern which is
- *        used between multiple calls to avoid recomputing identical entries
- * \param memory_limit_MB can override the user specified limit (in MB),
- *        if set to zero the user selection will be used
- * \param index_limit should be set to the max value held by the 32-bit index,
- *        namely 2^31 -2 since 2^31 causes an overflow,
- *        a different value can be used for testing purposes
- */
-template<typename P>
-memory_usage
-compute_mem_usage(PDE<P> const &pde, adapt::distributed_grid<P> const &grid,
-                  options const &program_options, imex_flag const imex,
-                  kron_sparse_cache &spcache, int memory_limit_MB = 0,
-                  int64_t index_limit = 2147483646, bool force_sparse = false);
-
-#endif // KRON_MODE_GLOBAL
 
 /*!
  * \brief Holds a list of matrices used for time-stepping.
@@ -1039,66 +1048,23 @@ compute_mem_usage(PDE<P> const &pde, adapt::distributed_grid<P> const &grid,
  * as a set and reduce the number of matrix making.
  */
 template<typename precision>
-struct matrix_list
+struct kron_operators
 {
-  //! \brief Makes a list of uninitialized matrices
-  matrix_list()
-#ifndef KRON_MODE_GLOBAL
-      : matrices(3)
-#endif
-  {
-#ifndef KRON_MODE_GLOBAL
-    // make sure we have defined flags for all matrices
-    expect(matrices.size() == flag_map.size());
-#ifdef ASGARD_USE_GPU_MEM_LIMIT
-    load_stream = nullptr;
-#endif
-#endif
-  }
-  //! \brief Frees the matrix list and any cache vectors
-  ~matrix_list()
-  {
-#ifdef ASGARD_USE_GPU_MEM_LIMIT
-    if (load_stream != nullptr)
-    {
-      auto status = cudaStreamDestroy(load_stream);
-      expect(status == cudaSuccess);
-    }
-#endif
-  }
-
-#ifndef KRON_MODE_GLOBAL
-  //! \brief Returns an entry indexed by the enum
-  kronmult_matrix<precision> &operator[](matrix_entry entry)
-  {
-    return matrices[static_cast<int>(entry)];
-  }
-#endif
-
   //! \brief Apply the given matrix entry
   template<resource rec = resource::host>
-  void apply(matrix_entry entry, precision alpha, precision const x[], precision beta, precision y[])
+  void apply(imex_flag entry, precision alpha, precision const x[], precision beta, precision y[]) const
   {
-#ifdef KRON_MODE_GLOBAL
     kglobal.template apply<rec>(entry, alpha, x, beta, y);
-#else
-    matrices[static_cast<int>(entry)].template apply<rec>(alpha, x, beta, y);
-#endif
   }
-  int64_t flops(matrix_entry entry)
+  int64_t flops(imex_flag entry) const
   {
-#ifdef KRON_MODE_GLOBAL
     return kglobal.flops(entry);
-#else
-    return matrices[static_cast<int>(entry)].flops();
-#endif
   }
 
   //! \brief Make the matrix for the given entry
-  void make(matrix_entry entry, PDE<precision> const &pde,
+  void make(imex_flag entry, PDE<precision> const &pde,
             adapt::distributed_grid<precision> const &grid, options const &opts)
   {
-#ifdef KRON_MODE_GLOBAL
     if (not kglobal)
     {
       kglobal = make_global_kron_matrix(pde, grid, opts);
@@ -1108,129 +1074,51 @@ struct matrix_list
 
     if (kglobal.local_unset(entry))
     {
-      set_specific_mode(pde, grid, opts, imex(entry), kglobal);
+      set_specific_mode(pde, grid, opts, entry, kglobal);
 #ifdef ASGARD_USE_CUDA
-      kglobal.preset_gpu_gkron(sp_handle, imex(entry));
+      kglobal.preset_gpu_gkron(sp_handle, entry);
 #endif
     }
-#else
-    if (not mem_stats)
-      mem_stats = compute_mem_usage(pde, grid, opts, imex(entry), spcache);
-
-    if (not(*this)[entry])
-      (*this)[entry] = make_kronmult_matrix(pde, grid, opts, mem_stats,
-                                            imex(entry), spcache);
-
-#ifdef ASGARD_USE_CUDA
-    if ((*this)[entry].input_size() != xdev.size())
-    {
-      xdev = fk::vector<precision, mem_type::owner, resource::device>();
-      xdev = fk::vector<precision, mem_type::owner, resource::device>(
-          (*this)[entry].input_size());
-    }
-    if ((*this)[entry].output_size() != ydev.size())
-    {
-      ydev = fk::vector<precision, mem_type::owner, resource::device>();
-      ydev = fk::vector<precision, mem_type::owner, resource::device>(
-          (*this)[entry].output_size());
-    }
-    (*this)[entry].set_workspace(xdev, ydev);
-#endif
-#ifdef ASGARD_USE_GPU_MEM_LIMIT
-    if (mem_stats.kron_call == memory_usage::multi_calls)
-    {
-      // doing multiple calls, prepare streams and workspaces
-      if (load_stream == nullptr)
-        cudaStreamCreate(&load_stream);
-      if (worka.size() < static_cast<int>(mem_stats.work_size))
-      {
-        worka = fk::vector<int, mem_type::owner, resource::device>();
-        workb = fk::vector<int, mem_type::owner, resource::device>();
-        worka = fk::vector<int, mem_type::owner, resource::device>(
-            mem_stats.work_size);
-        workb = fk::vector<int, mem_type::owner, resource::device>(
-            mem_stats.work_size);
-        if (not(*this)[entry].is_dense())
-        {
-          irowa = fk::vector<int, mem_type::owner, resource::device>();
-          irowb = fk::vector<int, mem_type::owner, resource::device>();
-          icola = fk::vector<int, mem_type::owner, resource::device>();
-          icolb = fk::vector<int, mem_type::owner, resource::device>();
-          irowa = fk::vector<int, mem_type::owner, resource::device>(
-              mem_stats.row_work_size);
-          irowb = fk::vector<int, mem_type::owner, resource::device>(
-              mem_stats.row_work_size);
-          icola = fk::vector<int, mem_type::owner, resource::device>(
-              mem_stats.row_work_size);
-          icolb = fk::vector<int, mem_type::owner, resource::device>(
-              mem_stats.row_work_size);
-        }
-      }
-    }
-    (*this)[entry].set_workspace_ooc(worka, workb, load_stream);
-    (*this)[entry].set_workspace_ooc_sparse(irowa, irowb, icola, icolb);
-#endif
-#endif
   }
   /*!
    * \brief Either makes the matrix or if it exists, just updates only the
    *        coefficients
    */
-  void reset_coefficients(matrix_entry entry, PDE<precision> const &pde,
+  void reset_coefficients(imex_flag entry, PDE<precision> const &pde,
                           adapt::distributed_grid<precision> const &grid,
                           options const &opts)
   {
-#ifdef KRON_MODE_GLOBAL
     if (not kglobal)
       make(entry, pde, grid, opts);
     else
     {
       if (kglobal.local_unset(entry))
       {
-        set_specific_mode(pde, grid, opts, imex(entry), kglobal);
+        set_specific_mode(pde, grid, opts, entry, kglobal);
 #ifdef ASGARD_USE_CUDA
-        kglobal.preset_gpu_gkron(sp_handle, imex(entry));
+        kglobal.preset_gpu_gkron(sp_handle, entry);
 #endif
       }
       else
-        update_matrix_coefficients(pde, grid, opts, imex(entry), kglobal);
+        update_matrix_coefficients(pde, grid, opts, entry, kglobal);
     }
-#else
-    if (not(*this)[entry])
-      make(entry, pde, grid, opts);
-    else
-      update_kronmult_coefficients(pde, opts, imex(entry), spcache,
-                                   (*this)[entry]);
-#endif
   }
 
-  //! \brief Clear the specified matrix
-  void clear(matrix_entry entry)
-  {
-#ifdef KRON_MODE_GLOBAL
-    ignore(entry);
-    if (kglobal)
-      kglobal = global_kron_matrix<precision>();
-#else
-    if (matrices[static_cast<int>(entry)])
-      matrices[static_cast<int>(entry)] = kronmult_matrix<precision>();
-#endif
-  }
   //! \brief Clear all matrices
-  void clear_all()
+  void clear()
   {
-#ifdef KRON_MODE_GLOBAL
     if (kglobal)
       kglobal = global_kron_matrix<precision>();
-#else
-    for (auto &matrix : matrices)
-      if (matrix)
-        matrix = kronmult_matrix<precision>();
-    mem_stats.reset();
-#endif
   }
 
-#ifdef KRON_MODE_GLOBAL
+  //! \brief Returns the preconditioner.
+  template<resource rec>
+  auto const &get_diagonal_preconditioner() const
+  {
+    return kglobal.template get_diagonal_preconditioner<rec>();
+  }
+
+private:
   //! \brief Holds the global part of the kron product
   global_kron_matrix<precision> kglobal;
 
@@ -1239,43 +1127,139 @@ struct matrix_list
   gpu::sparse_handle sp_handle;
   gpu::vector<std::byte> gpu_sparse_buffer;
 #endif
-#else
-  //! \brief Holds the matrices
-  std::vector<kronmult_matrix<precision>> matrices;
-#endif
+};
+#endif // end ifndef KRON_MODE_GLOBAL_BLOCK
+#endif // end ifdef KRON_MODE_GLOBAL
+
+#ifdef KRON_MODE_GLOBAL_BLOCK
+// using BLOCK-GLOBAL kronmult, the fastest method on the cpu and very memory conservative
+
+template<typename precision>
+class block_global_kron_matrix;
+
+template<typename precision>
+void set_specific_mode(
+    PDE<precision> const &pde,
+    adapt::distributed_grid<precision> const &dis_grid,
+    options const &program_options, imex_flag const imex,
+    block_global_kron_matrix<precision> &mat);
+
+template<typename precision>
+class block_global_kron_matrix
+{
+public:
+  block_global_kron_matrix() : num_dimensions_(0), conn_volumes_(1), conn_full_(1), workspace_(nullptr) {}
+
+  block_global_kron_matrix(int64_t num_active, int64_t num_padded,
+                           int num_dimensions, int blockn, int64_t block_size,
+                           vector2d<int> &&ilist, dimension_sort &&dsort,
+                           std::vector<kronmult::permutes> &&perms, std::vector<int> &&flux_dir,
+                           connect_1d &&conn_volumes, connect_1d &&conn_full,
+                           kronmult::block_global_workspace<precision> *workspace)
+      : num_active_(num_active), num_padded_(num_padded),
+        num_dimensions_(num_dimensions), blockn_(blockn), block_size_(block_size),
+        ilist_(std::move(ilist)), dsort_(std::move(dsort)), perms_(std::move(perms)),
+        flux_dir_(std::move(flux_dir)), conn_volumes_(std::move(conn_volumes)),
+        conn_full_(std::move(conn_full)), gvals_(flux_dir_.size() * num_dimensions_),
+        workspace_(workspace)
+  {
+    for (auto &f : flops_)
+      f = -1;
+  }
+
+  template<resource rec>
+  void apply(imex_flag etype, precision alpha, precision const *x, precision beta, precision *y) const;
+
+  operator bool() const { return (num_dimensions_ > 0); }
+
+  bool specific_is_set(imex_flag etype)
+  {
+    std::vector<int> const &terms = term_groups_[static_cast<int>(etype)];
+    if (terms.empty())
+      return true; // nothing to set, so we're OK
+
+    for (int d = 0; d < num_dimensions_; d++)
+      if (not gvals_[terms.front() * num_dimensions_ + d].empty())
+        return true;
+
+    return false;
+  }
+
+  //! \brief Allows overwriting of the loaded coefficients.
+  template<resource rec>
+  auto const &get_diagonal_preconditioner() const
+  {
+    static_assert(rec == resource::host, "GPU not enabled");
+    return pre_con_;
+  }
+
+  //! \brief Return the number of flops for the current matrix type
+  int64_t flops(imex_flag etype) const
+  {
+    int i = static_cast<int>(etype);
+    if (flops_[i] == -1)
+    {
+      flops_[i] = kronmult::block_global_count_flops(
+          num_dimensions_, block_size_, ilist_, dsort_, perms_,
+          flux_dir_, conn_volumes_, conn_full_, term_groups_[i], *workspace_);
+      switch (etype)
+      {
+      case imex_flag::unspecified:
+        std::cout << "regular block-global kronmult matrix\n";
+        break;
+      case imex_flag::imex_explicit:
+        std::cout << "imex-explicit block-global kronmult matrix\n";
+        break;
+      case imex_flag::imex_implicit:
+        std::cout << "imex-implicit block-global kronmult matrix\n";
+        break;
+      };
+      std::cout << "   -- number of flops: " << flops_[i] * 1.E-9 << "Gflops\n";
+    }
+    return flops_[i];
+  }
+
+  connect_1d const &get_volume_conn() const { return conn_volumes_; };
+  vector2d<int> const &get_cells() const { return ilist_; };
+  dimension_sort const &get_dsort() const { return dsort_; };
+
+  // made friends for two reasons
+  // 1. Keeps the matrix API free from references to pde, which will allow an easier
+  //    transition to a new API that does not require the PDE class
+  // 2. Give the ability to modify the internal without encumbering the matrix API
+  friend void set_specific_mode<precision>(
+      PDE<precision> const &pde,
+      adapt::distributed_grid<precision> const &dis_grid,
+      options const &program_options, imex_flag const imex,
+      block_global_kron_matrix<precision> &mat);
 
 private:
-  //! \brief Maps the entry enum to the IMEX flag
-  static imex_flag imex(matrix_entry entry)
-  {
-    return flag_map[static_cast<int>(entry)];
-  }
-  //! \brief Maps imex flags to integers
-  static constexpr std::array<imex_flag, 3> flag_map = {
-      imex_flag::unspecified, imex_flag::imex_explicit,
-      imex_flag::imex_implicit};
+  int64_t num_active_, num_padded_;
+  int num_dimensions_, blockn_;
+  int64_t block_size_;
+  vector2d<int> ilist_;
+  dimension_sort dsort_;
+  std::vector<kronmult::permutes> perms_;
+  std::vector<int> flux_dir_;
+  connect_1d conn_volumes_, conn_full_;
 
-#ifndef KRON_MODE_GLOBAL
-  //! \brief Cache holding the memory stats, limits bounds etc.
-  memory_usage mem_stats;
+  std::vector<std::vector<precision>> gvals_;
+  std::array<std::vector<int>, 3> term_groups_;
+  mutable kronmult::block_global_workspace<precision> *workspace_;
 
-  //! \brief Cache holding sparse parameters to avoid recomputing data
-  kron_sparse_cache spcache;
+  mutable std::array<int64_t, num_imex_variants> flops_;
 
-#ifdef ASGARD_USE_CUDA
-  //! \brief Work buffers for the input and output
-  mutable fk::vector<precision, mem_type::owner, resource::device> xdev, ydev;
-#endif
-#ifdef ASGARD_USE_GPU_MEM_LIMIT
-  mutable fk::vector<int, mem_type::owner, resource::device> worka;
-  mutable fk::vector<int, mem_type::owner, resource::device> workb;
-  mutable fk::vector<int, mem_type::owner, resource::device> irowa;
-  mutable fk::vector<int, mem_type::owner, resource::device> irowb;
-  mutable fk::vector<int, mem_type::owner, resource::device> icola;
-  mutable fk::vector<int, mem_type::owner, resource::device> icolb;
-  cudaStream_t load_stream;
-#endif
-#endif
+  // preconditioner
+  std::vector<precision> pre_con_;
 };
+
+template<typename precision>
+block_global_kron_matrix<precision>
+make_block_global_kron_matrix(PDE<precision> const &pde,
+                              adapt::distributed_grid<precision> const &dis_grid,
+                              options const &program_options,
+                              kronmult::block_global_workspace<precision> *workspace);
+
+#endif
 
 } // namespace asgard

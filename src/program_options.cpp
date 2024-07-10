@@ -38,7 +38,7 @@ parser::parser(int argc, char const *const *argv)
       clara::detail::Opt(use_implicit_stepping)["-i"]["--implicit"](
           "Use implicit time advance (vs. explicit)") |
       clara::detail::Opt(solver_str,
-                         "direct|gmres|scalapack")["-s"]["--solver"](
+                         "direct|gmres|bicgstab|scalapack")["-s"]["--solver"](
           "Solver to use for implicit advance") |
       clara::detail::Opt(starting_levels_str,
                          "e.g. for 2d PDE: \"3 2\"")["-l"]["--levels"](
@@ -82,11 +82,11 @@ parser::parser(int argc, char const *const *argv)
       clara::detail::Opt(kmode_str, "dense/sparse")["--kron-mode"](
           "Select dense (default) or sparse mode for the kronmult operations") |
       clara::detail::Opt(gmres_tolerance, "tol > 0")["--tol"](
-          "Tolerance used to determine convergence in gmres solver") |
+          "Tolerance used to determine convergence in bicgstab/gmres solvers") |
       clara::detail::Opt(gmres_inner_iterations, "inner_it > 0")["--inner_it"](
           "Number of inner iterations in gmres solver") |
       clara::detail::Opt(gmres_outer_iterations, "outer_it > 0")["--outer_it"](
-          "Number of outer iterations in gmres solver") |
+          "Number of max/outer iterations in bicgstab/gmres solver") |
       clara::detail::Opt(max_adapt_levels_str, "")["--max_adapt_levels"](
           "Maximum hierarchical levels (resolution) for adaptivity") |
       clara::detail::Opt(restart_file, "filename")["--restart"](
@@ -255,9 +255,9 @@ parser::parser(int argc, char const *const *argv)
     valid = false;
   }
 
-  if (use_imex_stepping)
+  if (use_imex_stepping && solver_str != "bicgstab")
   {
-    // imex only uses gmres
+    // imex defaults to gmres
     solver_str = "gmres";
   }
 
@@ -297,9 +297,9 @@ parser::parser(int argc, char const *const *argv)
   }
 
 #ifdef ASGARD_USE_CUDA
-  if (use_implicit_stepping && solver_str != "gmres")
+  if (use_implicit_stepping && solver_str != "gmres" && solver_str != "bicgstab")
   {
-    std::cerr << "GPU acceleration for implicit stepping only supports gmres\n";
+    std::cerr << "GPU acceleration for implicit stepping only supports bicgstab or gmres\n";
     valid = false;
   }
 #endif
@@ -386,7 +386,7 @@ parser::parser(int argc, char const *const *argv)
     valid = false;
   }
 
-  if (solver != solve_opts::gmres && gmres_tolerance != NO_USER_VALUE_FP)
+  if (solver != solve_opts::gmres && solver != solve_opts::bicgstab && gmres_tolerance != NO_USER_VALUE_FP)
   {
     std::cerr << "gmres tolerance has no effect with solver = " << solver_str
               << '\n';
@@ -409,7 +409,7 @@ parser::parser(int argc, char const *const *argv)
               << '\n';
     valid = false;
   }
-  if (solver != solve_opts::gmres && gmres_outer_iterations != NO_USER_VALUE)
+  if (solver != solve_opts::gmres && solver != solve_opts::bicgstab && gmres_outer_iterations != NO_USER_VALUE)
   {
     std::cerr << "Number of gmres outer iterations has no effect with solver = "
               << solver_str << '\n';
@@ -470,8 +470,8 @@ bool parser::do_poisson_solve() const { return do_poisson; }
 bool parser::do_adapt_levels() const { return do_adapt; }
 bool parser::do_restart() const { return restart_file != NO_USER_VALUE_STR; }
 
-fk::vector<int> parser::get_starting_levels() const { return starting_levels; }
-fk::vector<int> parser::get_active_terms() const { return active_terms; }
+fk::vector<int> const &parser::get_starting_levels() const { return starting_levels; }
+fk::vector<int> const &parser::get_active_terms() const { return active_terms; }
 int parser::get_degree() const { return degree; }
 int parser::get_max_level() const { return max_level; }
 int parser::get_mixed_grid_group() const { return mixed_grid_group; }
@@ -600,12 +600,19 @@ void parser_mod::set(parser &p, parser_option_entry entry, double value)
 }
 
 void parser_mod::set(parser &p, parser_option_entry entry,
+                     const char *value)
+{
+  parser_mod::set(p, entry, std::string(value));
+}
+
+void parser_mod::set(parser &p, parser_option_entry entry,
                      std::string const &value)
 {
   switch (entry)
   {
   case solver_str:
     p.solver_str = value;
+    p.solver     = solver_mapping.at(value);
     break;
   case pde_str:
     p.pde_str    = value;

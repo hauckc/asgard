@@ -45,7 +45,7 @@ void test_kronmult(parser const &parse, P const tol_factor)
   auto const gen = [&dist, &mersenne_engine]() {
     return dist(mersenne_engine);
   };
-  auto const elem_size  = static_cast<int>(std::pow(degree, pde->num_dims));
+  auto const elem_size  = static_cast<int>(std::pow(degree, pde->num_dims()));
   fk::vector<P> const b = [&table, gen, elem_size]() {
     fk::vector<P> output(elem_size * table.size());
     std::generate(output.begin(), output.end(), gen);
@@ -91,9 +91,31 @@ void test_kronmult(parser const &parse, P const tol_factor)
 
   rmse_comparison(gold, gmres, tol_factor);
 
-  asgard::matrix_list<P> operator_matrices;
+  // perform bicgstab with system matrix A
+  fk::vector<P> const bicgstab = [&pde, &table, &my_subgrid, &gold, &b,
+                                  elem_size]() {
+    auto const system_size = elem_size * table.size();
+    fk::matrix<P> A(system_size, system_size);
+    fk::vector<P> x(gold);
+    int const max_iter = parser::DEFAULT_GMRES_OUTER_ITERATIONS;
+    P const tolerance  = std::is_same_v<float, P> ? 1e-6 : 1e-12;
+    build_system_matrix(*pde, table, A, my_subgrid);
+    // AA = I - dt*A;
+    fm::scal(P{-1.} * pde->get_dt(), A);
+    for (int i = 0; i < A.nrows(); ++i)
+    {
+      A(i, i) += 1.0;
+    }
+    solver::bicgstab(A, x, b, fk::matrix<P>(), max_iter,
+                     tolerance);
+    return x;
+  }();
+
+  rmse_comparison(gold, bicgstab, tol_factor);
+
+  asgard::kron_operators<P> operator_matrices;
   asgard::adapt::distributed_grid adaptive_grid(*pde, opts);
-  operator_matrices.make(matrix_entry::regular, *pde, adaptive_grid, opts);
+  operator_matrices.make(imex_flag::unspecified, *pde, adaptive_grid, opts);
   P const dt = pde->get_dt();
 
   // perform matrix-free gmres
@@ -103,17 +125,26 @@ void test_kronmult(parser const &parse, P const tol_factor)
     int const restart  = parser::DEFAULT_GMRES_INNER_ITERATIONS;
     int const max_iter = parser::DEFAULT_GMRES_OUTER_ITERATIONS;
     P const tolerance  = std::is_same_v<float, P> ? 1e-6 : 1e-12;
-#ifdef KRON_MODE_GLOBAL
-    solver::simple_gmres_euler(dt, matrix_entry::regular, operator_matrices.kglobal, x,
+    solver::simple_gmres_euler(dt, imex_flag::unspecified, operator_matrices, x,
                                b, restart, max_iter, tolerance);
-#else
-    solver::simple_gmres_euler(dt, operator_matrices[matrix_entry::regular], x,
-                               b, restart, max_iter, tolerance);
-#endif
     return x;
   }();
 
   rmse_comparison(gold, matrix_free_gmres, tol_factor);
+
+  // perform matrix-free bicgstab
+  fk::vector<P> const matrix_free_bicgstab = [&operator_matrices, &gold, &b,
+                                              dt]() {
+    fk::vector<P> x(gold);
+    int const max_iter = parser::DEFAULT_GMRES_OUTER_ITERATIONS;
+    P const tolerance  = std::is_same_v<float, P> ? 1e-6 : 1e-12;
+    solver::bicgstab_euler(dt, imex_flag::unspecified, operator_matrices, x,
+                           b, max_iter, tolerance);
+    return x;
+  }();
+
+  rmse_comparison(gold, matrix_free_bicgstab, tol_factor);
+
 #ifdef ASGARD_USE_CUDA
   // perform matrix-free gmres
   fk::vector<P> const mf_gpu_gmres = [&operator_matrices, &gold, &b, dt]() {
@@ -124,17 +155,27 @@ void test_kronmult(parser const &parse, P const tol_factor)
     int const restart  = parser::DEFAULT_GMRES_INNER_ITERATIONS;
     int const max_iter = parser::DEFAULT_GMRES_OUTER_ITERATIONS;
     P const tolerance  = std::is_same_v<float, P> ? 1e-6 : 1e-12;
-#ifdef KRON_MODE_GLOBAL
-    solver::simple_gmres_euler(dt, matrix_entry::regular, operator_matrices.kglobal,
+    solver::simple_gmres_euler(dt, imex_flag::unspecified, operator_matrices,
                                x_d, b_d, restart, max_iter, tolerance);
-#else
-    solver::simple_gmres_euler(dt, operator_matrices[matrix_entry::regular],
-                               x_d, b_d, restart, max_iter, tolerance);
-#endif
     return x_d.clone_onto_host();
   }();
 
   rmse_comparison(gold, mf_gpu_gmres, tol_factor);
+
+  // perform matrix-free bicgstab
+  fk::vector<P> const mf_gpu_bicgstab = [&operator_matrices, &gold, &b, dt]() {
+    fk::vector<P, mem_type::owner, resource::device> x_d =
+        gold.clone_onto_device();
+    fk::vector<P, mem_type::owner, resource::device> b_d =
+        b.clone_onto_device();
+    int const max_iter = parser::DEFAULT_GMRES_OUTER_ITERATIONS;
+    P const tolerance  = std::is_same_v<float, P> ? 1e-6 : 1e-12;
+    solver::bicgstab_euler(dt, imex_flag::unspecified, operator_matrices,
+                           x_d, b_d, max_iter, tolerance);
+    return x_d.clone_onto_host();
+  }();
+
+  rmse_comparison(gold, mf_gpu_bicgstab, tol_factor);
 #endif
 }
 

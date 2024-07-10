@@ -95,7 +95,7 @@ void moment<P>::createMomentReducedMatrix(PDE<P> const &pde,
                                           elements::table const &hash_table)
 {
   tools::time_event performance("createMomentMatrix");
-  switch (pde.num_dims)
+  switch (pde.num_dims())
   {
   case 2:
     createMomentReducedMatrix_nd<1>(pde, hash_table);
@@ -210,8 +210,6 @@ void moment<P>::createMomentReducedMatrix_nd(PDE<P> const &pde,
     }
   }
 
-  std::cout << " -- moment_mat map size = " << moment_mat.size() << "\n";
-
   // TODO: sparse construction is host-only
   fk::sparse<P, resource::host> host_sparse =
       fk::sparse<P, resource::host>(moment_mat, n, rows);
@@ -224,8 +222,6 @@ void moment<P>::createMomentReducedMatrix_nd(PDE<P> const &pde,
   {
     this->sparse_mat = host_sparse;
   }
-
-  std::cout << this->sparse_mat.sp_size() << "\n";
 }
 
 template<typename P>

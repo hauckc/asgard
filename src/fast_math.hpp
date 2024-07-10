@@ -27,6 +27,26 @@ inline constexpr T two_raised_to(T const exponent)
   return T{1} << exponent;
 }
 
+template<typename T = int64_t>
+inline constexpr T ipow(T base, int exponent)
+{
+  expect(exponent >= 1);
+  T result = base;
+  for (int e = 1; e < exponent; e++)
+    result *= base;
+  return result;
+}
+
+// computes std::floor( std::log2(x) ), returns 0 for x = 0
+// uses only bit-wise and integer operations
+inline int intlog2(int x)
+{
+  int result = 0;
+  while (x >>= 1)
+    result++;
+  return result;
+}
+
 template<typename P, mem_type mem>
 P nrminf(fk::vector<P, mem> const &x)
 {

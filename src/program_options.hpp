@@ -17,6 +17,7 @@ enum class solve_opts
 {
   direct,
   gmres,
+  bicgstab,
   scalapack
 };
 
@@ -26,6 +27,7 @@ using solve_map_t = std::map<std::string_view, solve_opts>;
 static solve_map_t const solver_mapping = {
     {"direct", solve_opts::direct},
     {"gmres", solve_opts::gmres},
+    {"bicgstab", solve_opts::bicgstab},
     {"scalapack", solve_opts::scalapack}};
 
 // the choices for supported PDE types
@@ -314,8 +316,8 @@ public:
   bool do_adapt_levels() const;
   bool do_restart() const;
 
-  fk::vector<int> get_starting_levels() const;
-  fk::vector<int> get_active_terms() const;
+  fk::vector<int>  const &get_starting_levels() const;
+  fk::vector<int>  const &get_active_terms() const;
 
   int get_degree() const;
   int get_max_level() const;
@@ -502,10 +504,9 @@ struct parser_mod
   static void set(parser &p, parser_option_entry entry, int value);
   static void set(parser &p, parser_option_entry entry, bool value);
   static void set(parser &p, parser_option_entry entry, double value);
-  static void
-  set(parser &p, parser_option_entry entry, std::string const &value);
-  static void
-  set(parser &p, parser_option_entry entry, fk::vector<int> const &value);
+  static void set(parser &p, parser_option_entry entry, const char *value);
+  static void set(parser &p, parser_option_entry entry, std::string const &value);
+  static void set(parser &p, parser_option_entry entry, fk::vector<int> const &value);
 };
 
 // simple class to hold non-pde user options

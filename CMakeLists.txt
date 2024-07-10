@@ -67,7 +67,7 @@ endforeach()
 # https://blog.kitware.com/cmake-and-the-default-build-type/
 set (default_build_type "Release")
 if (EXISTS "${CMAKE_SOURCE_DIR}/.git")
-  set (default_build_type "Debug")
+  set (default_build_type "RelWithDebInfo")
 endif ()
 
 if (NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
@@ -76,7 +76,7 @@ if (NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
        STRING "Choose the type of build." FORCE)
   # Set the possible values of build type for cmake-gui
   set_property (CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS
-    "Debug" "Release" "MinSizeRel" "RelWithDebInfo")
+    "Debug" "Release" "RelWithDebInfo")
 else ()
   message (STATUS "CMAKE_BUILD_TYPE is ${CMAKE_BUILD_TYPE}")
 endif ()
@@ -113,12 +113,23 @@ option (ASGARD_BUILD_DOCS "Build the documentation." OFF)
 
 if (ASGARD_USE_MPI)
   option (KRON_MODE_GLOBAL "Global or local Kronecker products" OFF)
+  option (KRON_MODE_GLOBAL_BLOCK "Use block variant for global kron" OFF)
 else()
-  option (KRON_MODE_GLOBAL "Global or local Kronecker products" ON)
+  if (ASGARD_USE_CUDA)
+    option (KRON_MODE_GLOBAL "Global or local Kronecker products" ON)
+    option (KRON_MODE_GLOBAL_BLOCK "Use block variant for global kron" OFF)
+  else()
+    option (KRON_MODE_GLOBAL "Global or local Kronecker products" ON)
+    option (KRON_MODE_GLOBAL_BLOCK "Use block variant for global kron" ON)
+  endif()
+endif()
+if (KRON_MODE_GLOBAL_BLOCK AND NOT KRON_MODE_GLOBAL)
+  message (FATAL_ERROR "KRON_MODE_GLOBAL_BLOCK=ON kronmult requires global KRON_MODE_GLOBAL=ON")
 endif()
 if (ASGARD_USE_MPI AND KRON_MODE_GLOBAL)
   message (FATAL_ERROR "Global Kronecker is not yet implemented for MPI")
 endif()
+
 
 if (ASGARD_RECOMMENDED_DEFAULTS)
   # add compiler flags we always want to use
@@ -223,7 +234,6 @@ but then the appropriate CMAKE_CUDA_FLAGS must be set manually.")
         endif()
     endif()
 
-
     enable_language (CUDA)
     find_package (CUDAToolkit REQUIRED)
 
@@ -244,7 +254,6 @@ foreach(_prec ${ASGARD_PRECISIONS})
         message(FATAL_ERROR "invalid precision ${_prec}, supported types are 'float' and 'double'")
     endif()
 endforeach()
-
 
 set (ASGARD_NUM_QUADRATURE "10" CACHE STRING "Number of quadrature points to be used in realspace transformations.")
 
@@ -297,6 +306,8 @@ set (components
      asgard_pde_system
      asgard_kronmult_matrix
      asgard_indexset
+     asgard_interpolation1d
+     asgard_interpolation
 )
 
 if (ASGARD_IO_HIGHFIVE)
@@ -332,6 +343,7 @@ target_sources (libasgard
                 $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/device/asgard_spkronmult.cpp>
                 $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/device/asgard_spkronmult_cpu.cpp>
                 $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/device/asgard_glkronmult_cpu.cpp>
+                $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/device/asgard_glkronmult_bcpu.cpp>
                 $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/device/asgard_glkronmult_gpu.cpp>
                 $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/device/asgard_preconditioner_gpu.cpp>
 )
@@ -543,7 +555,7 @@ if (ASGARD_BUILD_TESTS)
 # helps keep track of flags and options and whether things we enabled correctly
   message(STATUS "")
   message(STATUS "ASGarD build options (summary):")
-  foreach(_opt CMAKE_CXX_FLAGS ASGARD_PRECISIONS ASGARD_USE_OPENMP ASGARD_USE_MPI ASGARD_USE_MATLAB KRON_MODE_GLOBAL)
+  foreach(_opt CMAKE_CXX_FLAGS ASGARD_PRECISIONS ASGARD_USE_OPENMP ASGARD_USE_MPI ASGARD_USE_MATLAB KRON_MODE_GLOBAL KRON_MODE_GLOBAL_BLOCK)
     message(STATUS "  ${_opt}=${${_opt}}")
   endforeach()
   if (ASGARD_USE_CUDA)
@@ -555,6 +567,4 @@ if (ASGARD_BUILD_TESTS)
   endif()
   message(STATUS "")
 
-else ()
-  message (WARNING "warning: tests will not be built.")
 endif ()
