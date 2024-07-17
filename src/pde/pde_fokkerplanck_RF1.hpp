@@ -13,13 +13,21 @@ class PDE_fokkerplanck_RF1 : public PDE<P>
 {
 public:
   PDE_fokkerplanck_RF1(parser const &cli_input)
-      : PDE<P>(cli_input, num_dims_, num_sources_, num_terms_, dimensions_,
-               terms_, sources_, exact_vector_funcs_, exact_scalar_func_,
-               get_dt_, do_poisson_solve_, has_analytic_soln_)
   {
     v_thermal = std::sqrt(2 * T_e / m_e); // executed at runtime, can use std::sqrt and other such methods
     nu_0 = electron_density * electron_density * electron_density * electron_density
       * coulomb_logarithm / (2 * M_PI * electron_density * v_thermal * v_thermal * v_thermal);
+  
+  /* Define the dimension */
+  dimension<P> dim_0 =
+      dimension<P>(-6*v_thermal, 6.0*v_thermal, 3, 2, initial_condition_dim0, nullptr, "v_par");
+
+  std::vector<dimension<P>> dimensions_ = {dim_0};
+
+  this->initialize(cli_input, num_dims_, num_sources_, num_terms_, dimensions_,
+               terms_, sources_, exact_vector_funcs_,
+               get_dt_, do_poisson_solve_, has_analytic_soln_);
+  
   }
 
 private:
@@ -117,11 +125,7 @@ private:
     return fx;
   }
 
-  /* Define the dimension */
-  inline static dimension<P> const dim_0 =
-      dimension<P>(-8.0, 8.0, 3, 2, initial_condition_dim0, nullptr, "v_par");
 
-  inline static std::vector<dimension<P>> const dimensions_ = {dim_0};
 
   /* Define terms */
 
@@ -225,7 +229,7 @@ private:
   // inline static std::vector<vector_func<P>> const exact_vector_funcs_ = {
   //     exact_solution_0, exact_time};
 
-  inline static std::vector<vector_func<P>> const exact_vector_funcs_ = {};
+  inline static std::vector<md_func_type<P>> const exact_vector_funcs_ = {};
 
   /* This is not used ever */
   inline static scalar_func<P> const exact_scalar_func_ = nullptr;
